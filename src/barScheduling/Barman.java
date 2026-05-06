@@ -364,7 +364,29 @@ public class Barman extends Thread {
     
     
     private void recordCompletedOrder(DrinkOrder order) throws IOException {
-        
+        long waiting    = order.getWaitingTime();
+        long response   = order.getResponseTime();
+        long turnaround = order.getTurnaroundTime();
+        int  qLevel     = (schedAlg == 3) ? order.getQueueLevel() : -1;
+
+        String line = String.format(Locale.US,
+            "%d,%s,%d,%d,%d,%d,%d,%d,%d,%d\n",
+            order.getOrderer(),
+            order.getDrinkName(),
+            order.getExecutionTime(),
+            order.getArrivalTime(),
+            order.getServiceStartTime(),
+            order.getCompletionTime(),
+            waiting,
+            response,
+            turnaround,
+            qLevel
+        );
+
+        synchronized (CSV_LOCK) {
+            csvWriter.write(line);
+            csvWriter.flush();
+        }
     }
 
 }
