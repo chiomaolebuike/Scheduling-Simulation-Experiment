@@ -26,6 +26,9 @@ public class Barman extends Thread {
     private final int schedAlg;
     private final int switchTime;
 
+    private FileWriter csvWriter;
+    private static final Object CSV_LOCK = new Object();
+
     // Single-queue schedulers
     private LinkedBlockingQueue<DrinkOrder> fcfsQueue;
     private PriorityBlockingQueue<DrinkOrder> sjfQueue;
@@ -89,6 +92,25 @@ public class Barman extends Thread {
                         "Invalid scheduler " + sAlg +
                         ". Valid values are: 0=FCFS, 1=SJF, 2=Priority, 3=MLFQ."
                 );
+        }
+
+        // Open CSV file
+        try {
+            String filename = "results/" + schedulerName + "_results.csv";
+            new File("results").mkdirs(); // create folder if absent
+            csvWriter = new FileWriter(filename, true); // append mode
+            // Write header only if file is new/empty
+            File f = new File(filename);
+            if (f.length() == 0) {
+                csvWriter.write(
+                    "patronID,drinkName,executionTime,arrivalTime," +
+                    "serviceStartTime,completionTime," +
+                    "waitingTime,responseTime,turnaroundTime,queueLevel\n"
+                );
+                csvWriter.flush();
+            }
+        } catch (IOException e) {
+            throw new RuntimeException("Cannot open CSV file", e);
         }
     }
 
@@ -272,6 +294,12 @@ public class Barman extends Thread {
 
         } catch (InterruptedException e) {
             System.out.println("---Barman is packing up");
+            // Close CSV writer cleanly
+            try {
+               if (csvWriter != null) csvWriter.close(); 
+            } catch (IOException ex) {
+               ex.printStackTrace(); 
+            }
         } catch (IOException e) {
             throw new RuntimeException("Failed to write output", e);
         }
@@ -336,7 +364,7 @@ public class Barman extends Thread {
     
     
     private void recordCompletedOrder(DrinkOrder order) throws IOException {
-    	// THIS IS THE ONLY FUNCTION YOU MAY CHANGE
+        
     }
 
 }
