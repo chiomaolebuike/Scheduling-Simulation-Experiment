@@ -15,8 +15,11 @@ package barScheduling;
 import java.io.File;
 import java.io.FileWriter;
 import java.io.IOException;
+import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.List;
 import java.util.Locale;
+import java.util.Random;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.LinkedBlockingQueue;
@@ -31,6 +34,9 @@ public class Barman extends Thread {
 
     private FileWriter csvWriter;
     private static final Object CSV_LOCK = new Object();
+
+    private final List<DrinkOrder> lotteryPool;
+    private final Random lotteryRng;
 
     // Single-queue schedulers
     private LinkedBlockingQueue<DrinkOrder> fcfsQueue;
@@ -65,6 +71,8 @@ public class Barman extends Thread {
         switch (schedAlg) {
             case 0:
                 fcfsQueue = new LinkedBlockingQueue<DrinkOrder>();
+                lotteryPool = null;
+                lotteryRng = null;
                 break;
 
             case 1:
@@ -73,6 +81,8 @@ public class Barman extends Thread {
                         Comparator.comparingInt(DrinkOrder::getExecutionTime)
                                   .thenComparingLong(DrinkOrder::getSequenceNumber)
                 );
+                lotteryPool = null;
+                lotteryRng = null;
                 break;
 
             case 2:
@@ -81,6 +91,8 @@ public class Barman extends Thread {
                         Comparator.comparingInt(DrinkOrder::getPriority)
                                   .thenComparingLong(DrinkOrder::getSequenceNumber)
                 );
+                lotteryPool = null;
+                lotteryRng = null;
                 break;
 
             case 3:
@@ -88,12 +100,19 @@ public class Barman extends Thread {
                 q1 = new LinkedBlockingQueue<DrinkOrder>();
                 q2 = new LinkedBlockingQueue<DrinkOrder>();
                 drinksServedPerPatron = new ConcurrentHashMap<Integer, Integer>();
+                lotteryPool = null;
+                lotteryRng = null;
+                break;
+
+            case 4:
+                lotteryPool = new ArrayList<DrinkOrder>();
+                lotteryRng = new Random();
                 break;
 
             default:
                 throw new IllegalArgumentException(
                         "Invalid scheduler " + sAlg +
-                        ". Valid values are: 0=FCFS, 1=SJF, 2=Priority, 3=MLFQ."
+                        ". Valid values are: 0=FCFS, 1=SJF, 2=Priority, 3=MLFQ, 4=LOTTERY."
                 );
         }
 
@@ -127,10 +146,12 @@ public class Barman extends Thread {
                 return "PRIORITY";
             case 3:
                 return "MLFQ";
+            case 4:
+                return "LOTTERY";
             default:
                 throw new IllegalArgumentException(
                         "Invalid scheduler " + schedAlg +
-                        ". Valid values are: 0=FCFS, 1=SJF, 2=Priority, 3=MLFQ."
+                        ". Valid values are: 0=FCFS, 1=SJF, 2=Priority, 3=MLFQ, 4=LOTTERY."
                 );
         }
     }
@@ -161,10 +182,16 @@ public class Barman extends Thread {
                 enqueueMLFQ(order, level);
                 break;
 
+            case 4:
+                synchronized (lotteryPool) {
+                    lotteryPool.add(order);
+                }
+                break;
+
             default:
                 throw new IllegalArgumentException(
                         "Invalid scheduler " + schedAlg +
-                        ". Valid values are: 0=FCFS, 1=SJF, 2=Priority, 3=MLFQ."
+                        ". Valid values are: 0=FCFS, 1=SJF, 2=Priority, 3=MLFQ, 4=LOTTERY."
                 );
         }
     }
@@ -288,10 +315,13 @@ public class Barman extends Thread {
                 case 3:
                     runMLFQ();
                     break;
+                case 4:
+                    runLottery();
+                    break;
                 default:
                     throw new IllegalStateException(
                             "Unexpected scheduler " + schedAlg +
-                            ". Valid values are: 0=FCFS, 1=SJF, 2=Priority, 3=MLFQ."
+                            ". Valid values are: 0=FCFS, 1=SJF, 2=Priority, 3=MLFQ, 4=LOTTERY."
                     );
             }
 
@@ -344,7 +374,42 @@ public class Barman extends Thread {
         }
     }
 
-  
+    private void runLottery() throws InterruptedException, IOException {
+        while (true) {
+            DrinkOrder winner = null;
+            synchronized (lotteryPool) {
+                if (!lotteryPool.isEmpty()) {
+                    long now = System.currentTimeMillis();
+                    int totalTickets = 0;
+                    List<Integer> tickets = new ArrayList<>();
+                    for (DrinkOrder order : lotteryPool) {
+                        int t = (int) ((now - order.getEnqueueTime()) / 100) + 1;
+                        tickets.add(t);
+                        totalTickets += t;
+                    }
+
+                    int drawn = lotteryRng.nextInt(totalTickets);
+                    int cumulative = 0;
+                    for (int i = 0; i < lotteryPool.size(); i++) {
+                        cumulative += tickets.get(i);
+                        if (drawn < cumulative) {
+                            winner = lotteryPool.remove(i);
+                            break;
+                        }
+                    }
+                }
+            }
+
+            if (winner != null) {
+                processOrder(
+                        winner,
+                        "---Barman preparing drink for patron " + winner + " (LOTTERY)"
+                );
+            } else {
+                TimeUnit.MILLISECONDS.sleep(1);
+            }
+        }
+    }
 
     private void processOrder(DrinkOrder currentOrder, String startMessage)
             throws InterruptedException, IOException {
