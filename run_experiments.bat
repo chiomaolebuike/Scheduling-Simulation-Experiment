@@ -1,41 +1,40 @@
-#!/bin/bash
+﻿@echo off
+setlocal EnableDelayedExpansion
 
-# Configuration
-PATRONS=(5 10 20 30 50)
-ALGORITHMS=(0 1 2 3)
-ALG_NAMES=("FCFS" "SJF" "PRIORITY" "MLFQ")
-SEEDS=(42 123 999 2024 31415)
-SWITCH_TIME=0
-RESULTS_DIR="results"
+REM Configuration
+set "PATRONS=5 10 20 30 50"
+set "ALGORITHMS=0 1 2 3"
+set "SEEDS=42 123 999 2024 31415"
+set "SWITCH_TIME=0"
+set "RESULTS_DIR=results"
 
-mkdir -p "$RESULTS_DIR"
+if not exist "%RESULTS_DIR%" mkdir "%RESULTS_DIR%"
 
-# Compile first
-javac -d out src/barScheduling/*.java 2>/dev/null || {
-    echo "Compilation failed"; exit 1;
-}
+echo Compiling...
+javac -d out src\barScheduling\*.java 2>nul
+if errorlevel 1 (
+    echo Compilation failed.
+    exit /b 1
+)
 
-for n in "${PATRONS[@]}"; do
-    for seed in "${SEEDS[@]}"; do
-        for alg in "${ALGORITHMS[@]}"; do
-            ALG_LABEL="${ALG_NAMES[$alg]}"
-            echo "Running: patrons=$n alg=$ALG_LABEL seed=$seed"
+for %%n in (%PATRONS%) do (
+    for %%seed in (%SEEDS%) do (
+        for %%alg in (%ALGORITHMS%) do (
+            if %%alg==0 set "ALG_LABEL=FCFS"
+            if %%alg==1 set "ALG_LABEL=SJF"
+            if %%alg==2 set "ALG_LABEL=PRIORITY"
+            if %%alg==3 set "ALG_LABEL=MLFQ"
 
-            # Results go to: results/FCFS_n20_s42_results.csv
-            # The Barman class names its file after the scheduler,
-            # so we rename after each run to include n and seed
-            java -cp out barScheduling.SchedulingSimulation \
-                $n $alg $SWITCH_TIME $seed \
-                > "$RESULTS_DIR/${ALG_LABEL}_n${n}_s${seed}.log" 2>&1
+            echo Running: patrons=%%n alg=!ALG_LABEL! seed=%%seed
 
-            # Rename the CSV the Barman wrote
-            SRC="$RESULTS_DIR/${ALG_LABEL}_results.csv"
-            DST="$RESULTS_DIR/${ALG_LABEL}_n${n}_s${seed}.csv"
-            if [ -f "$SRC" ]; then
-                mv "$SRC" "$DST"
-            fi
-        done
-    done
-done
+            java -cp out barScheduling.SchedulingSimulation %%n %%alg %SWITCH_TIME% %%seed > "%RESULTS_DIR%!ALG_LABEL!_n%%n_s%%seed!.log" 2>&1
 
-echo "All experiments complete. Results in: $RESULTS_DIR/"
+            set "SRC=%RESULTS_DIR%!ALG_LABEL!_results.csv"
+            set "DST=%RESULTS_DIR%!ALG_LABEL!_n%%n_s%%seed!.csv"
+            if exist "!SRC!" move /Y "!SRC!" "!DST!" >nul
+        )
+    )
+)
+
+echo All experiments complete. Results in: %RESULTS_DIR%
+endlocal
