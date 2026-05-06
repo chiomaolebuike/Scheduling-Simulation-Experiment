@@ -33,6 +33,16 @@ def load_all_results():
 df = load_all_results()
 print(f"Loaded {len(df)} order records across {df['seed'].nunique()} seeds")
 
+# Data integrity checks
+assert (df["waitingTime"] >= 0).all(),    "Negative waiting time!"
+assert (df["turnaroundTime"] >= 0).all(), "Negative turnaround!"
+assert (df["turnaroundTime"] >= df["waitingTime"]).all(), \
+    "Turnaround must be >= waiting time"
+assert (df["serviceStartTime"] >= df["arrivalTime"]).all(), \
+    "Service cannot start before arrival"
+assert (df["completionTime"] >= df["serviceStartTime"]).all(), \
+    "Cannot complete before starting"
+
 # ── 2. Per-run summary statistics ────────────────────────────────────────────
 
 def summarise(df):

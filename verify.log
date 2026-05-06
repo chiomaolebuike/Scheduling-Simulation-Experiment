@@ -1,0 +1,56 @@
+------Allegra the Barman Scheduling Simulation------
+-------------- with 2 patrons---------------
+-------------- and FCFS scheduling ---------------
++0: new thirsty Patron arrived at time 3379
+0: will order 3 drinks
+0: White Wine ordered
+---Barman preparing drink for patron 0: White Wine
+---Barman has made drink for patron 0: White Wine
+0: White Wine -> patron drinking
+0: Cider ordered
+---Barman preparing drink for patron 0: Cider
++1: new thirsty Patron arrived at time 3713
+1: will order 8 drinks
+1: Cider ordered
+---Barman has made drink for patron 0: Cider
+---Barman preparing drink for patron 1: Cider
+0: Cider -> patron drinking
+---Barman has made drink for patron 1: Cider
+1: Cider -> patron drinking
+0: B52 ordered
+---Barman preparing drink for patron 0: B52
+1: Tequila shot ordered
+---Barman has made drink for patron 0: B52
+---Barman preparing drink for patron 1: Tequila shot
+0: B52 -> patron drinking
+0: completed
+---Barman has made drink for patron 1: Tequila shot
+1: Tequila shot -> patron drinking
+1: Bloody Mary ordered
+---Barman preparing drink for patron 1: Bloody Mary
+---Barman has made drink for patron 1: Bloody Mary
+1: Bloody Mary -> patron drinking
+1: White Wine ordered
+---Barman preparing drink for patron 1: White Wine
+---Barman has made drink for patron 1: White Wine
+1: White Wine -> patron drinking
+1: Martini ordered
+---Barman preparing drink for patron 1: Martini
+---Barman has made drink for patron 1: Martini
+1: Martini -> patron drinking
+1: Red Wine ordered
+---Barman preparing drink for patron 1: Red Wine
+---Barman has made drink for patron 1: Red Wine
+1: Red Wine -> patron drinking
+1: Martini ordered
+---Barman preparing drink for patron 1: Martini
+---Barman has made drink for patron 1: Martini
+1: Martini -> patron drinking
+1: Beer ordered
+---Barman preparing drink for patron 1: Beer
+---Barman has made drink for patron 1: Beer
+1: Beer -> patron drinking
+1: completed
+------Waiting for Barman------
+---Barman is packing up
+------Bar closed------
