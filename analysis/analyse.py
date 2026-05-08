@@ -4,23 +4,36 @@ import glob
 import os
 from pathlib import Path
 
-RESULTS_DIR = "../results"
-PLOTS_DIR   = "plots"
-os.makedirs(PLOTS_DIR, exist_ok=True)
+SCRIPT_DIR = Path(__file__).resolve().parent
+RESULTS_DIR = SCRIPT_DIR.parent / "results"
+PLOTS_DIR = SCRIPT_DIR / "plots"
+PLOTS_DIR.mkdir(parents=True, exist_ok=True)
 
-ALGORITHMS  = ["FCFS", "SJF", "PRIORITY", "MLFQ"]
+ALGORITHMS = ["FCFS", "SJF", "PRIORITY", "MLFQ"]
 PATRON_SIZES = [5, 10, 20, 30, 50]
 
 # ── 1. Load all CSVs into one master DataFrame ────────────────────────────────
 
 def load_all_results():
     frames = []
-    for fpath in glob.glob(f"{RESULTS_DIR}/*.csv"):
-        fname = Path(fpath).stem           # e.g. "FCFS_n20_s42"
+    result_files = sorted(glob.glob(str(RESULTS_DIR / "*.csv")))
+    if not result_files:
+        raise FileNotFoundError(
+            f"No CSV result files found in {RESULTS_DIR}. "
+            "Make sure the script is run from the repository or that results exist."
+        )
+
+    for fpath in result_files:
+        fname = Path(fpath).stem           # e.g. "FCFS_n20_s42" or "FCFS_results"
         parts = fname.split("_")
-        alg   = parts[0]
-        n     = int(parts[1].replace("n",""))
-        seed  = int(parts[2].replace("s",""))
+        alg = parts[0]
+        if len(parts) >= 3 and parts[1].startswith("n") and parts[2].startswith("s"):
+            n = int(parts[1].replace("n",""))
+            seed = int(parts[2].replace("s",""))
+        else:
+            # Handle legacy format like "FCFS_results"
+            n = 5  # Assume 5 patrons based on patronID range
+            seed = 42  # Default seed
 
         df = pd.read_csv(fpath)
         df["algorithm"] = alg
