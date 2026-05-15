@@ -329,9 +329,12 @@ public class Barman extends Thread {
             System.out.println("---Barman is packing up");
             // Close CSV writer cleanly
             try {
-               if (csvWriter != null) csvWriter.close(); 
+                if (csvWriter != null) {
+                    csvWriter.flush();
+                    csvWriter.close();
+                }
             } catch (IOException ex) {
-               ex.printStackTrace(); 
+                System.err.println("Failed to close CSV writer: " + ex.getMessage());
             }
         } catch (IOException e) {
             throw new RuntimeException("Failed to write output", e);
@@ -432,27 +435,44 @@ public class Barman extends Thread {
     
     
     private void recordCompletedOrder(DrinkOrder order) throws IOException {
-        long waiting    = order.getWaitingTime();
-        long response   = order.getResponseTime();
-        long turnaround = order.getTurnaroundTime();
-        int  qLevel     = (schedAlg == 3) ? order.getQueueLevel() : -1;
 
-        String line = String.format(Locale.US,
-            "%d,%s,%d,%d,%d,%d,%d,%d,%d,%d\n",
+        // Compute metrics from timestamps already set on the order
+        long waitingTime    = order.getWaitingTime();
+        long responseTime   = order.getResponseTime();
+        long turnaroundTime = order.getTurnaroundTime();
+
+        // queueLevel is only meaningful for MLFQ; use -1 for others
+        int queueLevel = (schedAlg == 3) ? order.getQueueLevel() : -1;
+
+        // Validate — assert logical consistency before writing
+        if (waitingTime < 0 || turnaroundTime < 0) {
+            System.err.println("WARNING: negative metric detected for order: "
+                + order + " | waiting=" + waitingTime
+                + " turnaround=" + turnaroundTime);
+        }
+        if (turnaroundTime < waitingTime) {
+            System.err.println("WARNING: turnaround < waiting for order: "
+                + order);
+        }
+
+        // Format one CSV row
+        String row = String.format(Locale.US,
+            "%d,%s,%d,%d,%d,%d,%d,%d,%d,%d%n",
             order.getOrderer(),
             order.getDrinkName(),
             order.getExecutionTime(),
             order.getArrivalTime(),
             order.getServiceStartTime(),
             order.getCompletionTime(),
-            waiting,
-            response,
-            turnaround,
-            qLevel
+            waitingTime,
+            responseTime,
+            turnaroundTime,
+            queueLevel
         );
 
+        // Write atomically — Barman is a single thread but guard anyway
         synchronized (CSV_LOCK) {
-            csvWriter.write(line);
+            csvWriter.write(row);
             csvWriter.flush();
         }
     }
