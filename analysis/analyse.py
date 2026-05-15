@@ -9,7 +9,7 @@ RESULTS_DIR = SCRIPT_DIR.parent / "results"
 PLOTS_DIR = SCRIPT_DIR / "plots"
 PLOTS_DIR.mkdir(parents=True, exist_ok=True)
 
-ALGORITHMS = ["FCFS", "SJF", "PRIORITY", "MLFQ"]
+ALGORITHMS = ["FCFS", "SJF", "PRIORITY", "MLFQ", "LOTTERY"]
 PATRON_SIZES = [5, 10, 20, 30, 50]
 
 # ── 1. Load all CSVs into one master DataFrame ────────────────────────────────
@@ -32,7 +32,12 @@ def load_all_results():
             seed = int(parts[2].replace("s",""))
         else:
             # Handle legacy format like "FCFS_results"
-            n = 5  # Assume 5 patrons based on patronID range
+            # Infer n from the data (max patronID + 1) if possible
+            temp_df = pd.read_csv(fpath)
+            if "patronID" in temp_df.columns and not temp_df.empty:
+                n = int(temp_df["patronID"].max()) + 1
+            else:
+                n = 5
             seed = 42  # Default seed
 
         df = pd.read_csv(fpath)
@@ -141,7 +146,20 @@ def boxplot_for_n(df, n, metric="waitingTime"):
     plt.close()
     print(f"Saved: {fname}")
 
-for n in [10, 30]:
+# Choose sensible n values for boxplots based on available runs
+n_unique = sorted(df["n_patrons"].unique())
+box_ns = []
+if 10 in n_unique:
+    box_ns.append(10)
+if 30 in n_unique:
+    box_ns.append(30)
+if not box_ns:
+    if len(n_unique) >= 2:
+        box_ns = [n_unique[0], n_unique[-1]]
+    else:
+        box_ns = [n_unique[0]]
+
+for n in box_ns:
     boxplot_for_n(df, n, "waitingTime")
     boxplot_for_n(df, n, "turnaroundTime")
 
@@ -159,7 +177,14 @@ def throughput_bar(agg, n):
     plt.savefig(fname, dpi=150)
     plt.close()
 
-throughput_bar(agg, 20)
+# Pick throughput n: prefer 20 if present, otherwise use median available n
+n_unique_agg = sorted(agg["n_patrons"].unique())
+if 20 in n_unique_agg:
+    throughput_n = 20
+else:
+    throughput_n = n_unique_agg[len(n_unique_agg)//2]
+
+throughput_bar(agg, throughput_n)
 
 # ── 6. Per-Patron Fairness: Waiting Time Variance per Algorithm ───────────────
 
@@ -172,4 +197,4 @@ def fairness_analysis(df, n):
     print(f"\nFairness (lower variance = fairer) for n={n}:")
     print(variance_agg.to_string(index=False))
 
-fairness_analysis(df, 20)
+fairness_analysis(df, throughput_n)

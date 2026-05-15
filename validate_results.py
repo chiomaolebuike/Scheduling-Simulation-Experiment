@@ -69,7 +69,7 @@ def validate_csv(path: Path) -> int:
                 print(f"ERROR: line {line_number} has negative timing values: waiting={waiting_time}, response={response_time}, turnaround={turnaround_time}")
                 errors += 1
 
-            if not (arrival_time < service_start < completion_time):
+            if not (arrival_time <= service_start < completion_time):
                 print(f"ERROR: line {line_number} has inconsistent timestamps: arrival={arrival_time}, serviceStart={service_start}, completion={completion_time}")
                 errors += 1
 
