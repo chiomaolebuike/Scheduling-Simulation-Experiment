@@ -28,10 +28,10 @@ public class SchedulingSimulation {
 
  
     private static void validateScheduler(int sched) {
-        if (sched < 0 || sched > 3) {
+        if (sched < 0 || sched > 4) {
             throw new IllegalArgumentException(
                 "Invalid scheduler " + sched +
-                ". Valid values are: 0=FCFS, 1=SJF, 2=Priority, 3=MLFQ."
+                ". Valid values are: 0=FCFS, 1=SJF, 2=Priority, 3=MLFQ, 4=HRRN."
             );
         }
     }
@@ -46,10 +46,12 @@ public class SchedulingSimulation {
                 return "PRIORITY";
             case 3:
                 return "MLFQ";
+            case 4:
+                return "HRRN";
             default:
                 throw new IllegalArgumentException(
                     "Invalid scheduler " + sched +
-                    ". Valid values are: 0=FCFS, 1=SJF, 2=Priority, 3=MLFQ."
+                    ". Valid values are: 0=FCFS, 1=SJF, 2=Priority, 3=MLFQ, 4=HRRN."
                 );
         }
     }

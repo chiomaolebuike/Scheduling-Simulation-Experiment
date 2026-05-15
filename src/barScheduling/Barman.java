@@ -7,8 +7,8 @@
  1 = SJF
  2 = Priority
  3 = MLFQ with aging
+ 4 = HRRN bonus scheduler
  */
-
 
 package barScheduling;
 
@@ -19,7 +19,6 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Locale;
-import java.util.Random;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.LinkedBlockingQueue;
@@ -27,113 +26,128 @@ import java.util.concurrent.PriorityBlockingQueue;
 import java.util.concurrent.TimeUnit;
 
 public class Barman extends Thread {
+    private static final int MLFQ_Q1 = 40;
+    private static final int MLFQ_Q2 = 80;
+    private static final int MLFQ_Q3 = 160;
+    private static final long AGING_THRESHOLD = 4000L;
+    private static final Object CSV_LOCK = new Object();
 
     private final CountDownLatch startSignal;
     private final int schedAlg;
     private final int switchTime;
 
-    private FileWriter csvWriter;
-    private static final Object CSV_LOCK = new Object();
-
-    private final List<DrinkOrder> lotteryPool;
-    private final Random lotteryRng;
-
-    // Single-queue schedulers
     private LinkedBlockingQueue<DrinkOrder> fcfsQueue;
     private PriorityBlockingQueue<DrinkOrder> sjfQueue;
     private PriorityBlockingQueue<DrinkOrder> priorityQueue;
-
-    // MLFQ queues
     private LinkedBlockingQueue<DrinkOrder> q0;
     private LinkedBlockingQueue<DrinkOrder> q1;
     private LinkedBlockingQueue<DrinkOrder> q2;
+    private final List<DrinkOrder> hrrnQueue;
 
-    // Track how many drinks each patron has already had served
-    private ConcurrentHashMap<Integer, Integer> drinksServedPerPatron;
+    private final ConcurrentHashMap<Integer, Integer> drinksServedPerPatron;
+    private final ConcurrentHashMap<DrinkOrder, OrderMetrics> orderMetrics;
+    private long nextOrderId = 0L;
+    private FileWriter csvWriter;
 
-    // FIFO tie-breaker for priority scheduling
-    private long sequenceCounter = 0;
-
-    // Aging threshold for MLFQ
-    private static final long AGING_THRESHOLD = 4000; // ms
-
-    private final String schedulerName;
-
- 
-
- //=NO CHANGE AREA BEINGS=========================================================   
     Barman(CountDownLatch startSignal, int sAlg, int sTime) {
         this.startSignal = startSignal;
         this.schedAlg = sAlg;
         this.switchTime = sTime;
-        this.schedulerName = schedulerName(sAlg);
+        this.drinksServedPerPatron = new ConcurrentHashMap<Integer, Integer>();
+        this.orderMetrics = new ConcurrentHashMap<DrinkOrder, OrderMetrics>();
+        this.hrrnQueue = (sAlg == 4) ? new ArrayList<DrinkOrder>() : null;
 
         switch (schedAlg) {
             case 0:
                 fcfsQueue = new LinkedBlockingQueue<DrinkOrder>();
-                lotteryPool = null;
-                lotteryRng = null;
                 break;
-
             case 1:
                 sjfQueue = new PriorityBlockingQueue<DrinkOrder>(
-                        5000,
-                        Comparator.comparingInt(DrinkOrder::getExecutionTime)
-                                  .thenComparingLong(DrinkOrder::getSequenceNumber)
+                    5000,
+                    Comparator.comparingInt(DrinkOrder::getExecutionTime)
+                        .thenComparingLong(this::orderIdFor)
                 );
-                lotteryPool = null;
-                lotteryRng = null;
                 break;
-
             case 2:
                 priorityQueue = new PriorityBlockingQueue<DrinkOrder>(
-                        5000,
-                        Comparator.comparingInt(DrinkOrder::getPriority)
-                                  .thenComparingLong(DrinkOrder::getSequenceNumber)
+                    5000,
+                    Comparator.comparingInt(this::priorityFor)
+                        .thenComparingLong(this::orderIdFor)
                 );
-                lotteryPool = null;
-                lotteryRng = null;
                 break;
-
             case 3:
                 q0 = new LinkedBlockingQueue<DrinkOrder>();
                 q1 = new LinkedBlockingQueue<DrinkOrder>();
                 q2 = new LinkedBlockingQueue<DrinkOrder>();
-                drinksServedPerPatron = new ConcurrentHashMap<Integer, Integer>();
-                lotteryPool = null;
-                lotteryRng = null;
                 break;
-
             case 4:
-                lotteryPool = new ArrayList<DrinkOrder>();
-                lotteryRng = new Random();
                 break;
-
             default:
                 throw new IllegalArgumentException(
-                        "Invalid scheduler " + sAlg +
-                        ". Valid values are: 0=FCFS, 1=SJF, 2=Priority, 3=MLFQ, 4=LOTTERY."
+                    "Invalid scheduler " + sAlg +
+                    ". Valid values are: 0=FCFS, 1=SJF, 2=Priority, 3=MLFQ, 4=HRRN."
                 );
         }
 
-        // Open CSV file
         try {
-            String filename = "results/" + schedulerName + "_results.csv";
-            new File("results").mkdirs(); // create folder if absent
-            csvWriter = new FileWriter(filename, true); // append mode
-            // Write header only if file is new/empty
-            File f = new File(filename);
-            if (f.length() == 0) {
-                csvWriter.write(
-                    "patronID,drinkName,executionTime,arrivalTime," +
-                    "serviceStartTime,completionTime," +
-                    "waitingTime,responseTime,turnaroundTime,queueLevel\n"
-                );
-                csvWriter.flush();
-            }
+            openResultsFile();
         } catch (IOException e) {
-            throw new RuntimeException("Cannot open CSV file", e);
+            throw new RuntimeException("Unable to open results file", e);
         }
+    }
+
+    public void placeDrinkOrder(DrinkOrder order) throws InterruptedException, IOException {
+        long now = simulationTime();
+        OrderMetrics metrics = new OrderMetrics(
+            nextOrderId++,
+            order.getOrderer(),
+            order.getExecutionTime(),
+            priorityFor(order),
+            now
+        );
+        orderMetrics.put(order, metrics);
+
+        switch (schedAlg) {
+            case 0:
+                fcfsQueue.put(order);
+                break;
+            case 1:
+                sjfQueue.put(order);
+                break;
+            case 2:
+                priorityQueue.put(order);
+                break;
+            case 3:
+                metrics.queueLevel = 0;
+                q0.put(order);
+                break;
+            case 4:
+                synchronized (hrrnQueue) {
+                    hrrnQueue.add(order);
+                }
+                break;
+            default:
+                throw new IllegalArgumentException(
+                    "Invalid scheduler " + schedAlg +
+                    ". Valid values are: 0=FCFS, 1=SJF, 2=Priority, 3=MLFQ, 4=HRRN."
+                );
+        }
+    }
+
+    private void openResultsFile() throws IOException {
+        String schedulerName = schedulerName(schedAlg);
+        String directoryName = schedulerName.toLowerCase(Locale.ROOT);
+        File directory = new File("results", directoryName);
+        directory.mkdirs();
+
+        String filename = schedulerName + "_n" + SchedulingSimulation.noPatrons + "_s" + SchedulingSimulation.seed + ".csv";
+        File file = new File(directory, filename);
+        csvWriter = new FileWriter(file, false);
+        csvWriter.write(
+            "patron_id,order_id,arrival_time,burst_time,priority," +
+            "service_start_time,completion_time,response_time,waiting_time,turnaround_time,queue_level\n"
+        );
+        csvWriter.flush();
     }
 
     private static String schedulerName(int schedAlg) {
@@ -147,63 +161,31 @@ public class Barman extends Thread {
             case 3:
                 return "MLFQ";
             case 4:
-                return "LOTTERY";
+                return "HRRN";
             default:
-                throw new IllegalArgumentException(
-                        "Invalid scheduler " + schedAlg +
-                        ". Valid values are: 0=FCFS, 1=SJF, 2=Priority, 3=MLFQ, 4=LOTTERY."
-                );
+                throw new IllegalArgumentException("Unknown scheduler " + schedAlg);
         }
     }
 
-    public void placeDrinkOrder(DrinkOrder order) throws InterruptedException, IOException {
-        long now = System.currentTimeMillis();
-        order.setArrivalTime(now);
-        order.setEnqueueTime(now);
-        order.setSequenceNumber(nextSequenceNumber());
-
-        switch (schedAlg) {
-            case 0:
-                fcfsQueue.put(order);
-                break;
-
-            case 1:
-                sjfQueue.put(order);
-                break;
-
-            case 2:
-                order.setPriority(order.getOrderer()); // lower patron ID = higher priority
-                priorityQueue.put(order);
-                break;
-
-            case 3:
-                int level = initialQueueFor(order);
-                order.setQueueLevel(level);
-                enqueueMLFQ(order, level);
-                break;
-
-            case 4:
-                synchronized (lotteryPool) {
-                    lotteryPool.add(order);
-                }
-                break;
-
-            default:
-                throw new IllegalArgumentException(
-                        "Invalid scheduler " + schedAlg +
-                        ". Valid values are: 0=FCFS, 1=SJF, 2=Priority, 3=MLFQ, 4=LOTTERY."
-                );
-        }
+    private int priorityFor(DrinkOrder order) {
+        return order.getOrderer() + 1;
     }
 
-    private synchronized long nextSequenceNumber() {
-        return sequenceCounter++;
+    private long orderIdFor(DrinkOrder order) {
+        OrderMetrics metrics = orderMetrics.get(order);
+        return (metrics == null) ? Long.MAX_VALUE : metrics.orderId;
+    }
+
+    private OrderMetrics metadataFor(DrinkOrder order) {
+        OrderMetrics metrics = orderMetrics.get(order);
+        if (metrics == null) {
+            throw new IllegalStateException("Missing metrics for order " + order);
+        }
+        return metrics;
     }
 
     private int initialQueueFor(DrinkOrder order) {
-        int patron = order.getOrderer();
-        int served = drinksServedPerPatron.getOrDefault(patron, 0);
-
+        int served = drinksServedPerPatron.getOrDefault(order.getOrderer(), 0);
         if (served == 0) {
             return 0;
         }
@@ -214,8 +196,9 @@ public class Barman extends Thread {
     }
 
     private void enqueueMLFQ(DrinkOrder order, int level) throws InterruptedException {
-        order.setQueueLevel(level);
-        order.setEnqueueTime(System.currentTimeMillis());
+        OrderMetrics metrics = metadataFor(order);
+        metrics.queueLevel = level;
+        metrics.lastEnqueueTime = simulationTime();
 
         switch (level) {
             case 0:
@@ -233,17 +216,18 @@ public class Barman extends Thread {
     }
 
     private void ageQueues() throws InterruptedException {
-        long now = System.currentTimeMillis();
-        promoteOldOrders(q2, q1, 2, 1, now);
-        promoteOldOrders(q1, q0, 1, 0, now);
+        long now = simulationTime();
+        promoteOldOrders(q2, 2, q1, 1, now);
+        promoteOldOrders(q1, 1, q0, 0, now);
     }
 
-    private void promoteOldOrders(LinkedBlockingQueue<DrinkOrder> from,
-                                  LinkedBlockingQueue<DrinkOrder> to,
-                                  int fromLevel,
-                                  int toLevel,
-                                  long now) throws InterruptedException {
-
+    private void promoteOldOrders(
+        LinkedBlockingQueue<DrinkOrder> from,
+        int fromLevel,
+        LinkedBlockingQueue<DrinkOrder> to,
+        int toLevel,
+        long now
+    ) throws InterruptedException {
         int originalSize = from.size();
 
         for (int i = 0; i < originalSize; i++) {
@@ -252,13 +236,11 @@ public class Barman extends Thread {
                 break;
             }
 
-            long waited = now - order.getEnqueueTime();
-
-            if (order.getQueueLevel() == fromLevel && waited >= AGING_THRESHOLD) {
-                order.setQueueLevel(toLevel);
-                order.setEnqueueTime(now);
+            OrderMetrics metrics = metadataFor(order);
+            if (metrics.queueLevel == fromLevel && now - metrics.lastEnqueueTime >= AGING_THRESHOLD) {
+                metrics.queueLevel = toLevel;
+                metrics.lastEnqueueTime = now;
                 to.put(order);
-
             } else {
                 from.put(order);
             }
@@ -288,193 +270,217 @@ public class Barman extends Thread {
         }
     }
 
-    private void recordServedDrink(DrinkOrder order) {
-        if (schedAlg == 3) {
-            int patron = order.getOrderer();
-            drinksServedPerPatron.merge(patron, 1, Integer::sum);
+    private DrinkOrder takeNextHRRNOrder() throws InterruptedException {
+        while (true) {
+            synchronized (hrrnQueue) {
+                if (!hrrnQueue.isEmpty()) {
+                    long now = simulationTime();
+                    int bestIndex = 0;
+                    double bestRatio = -1.0;
+
+                    for (int i = 0; i < hrrnQueue.size(); i++) {
+                        DrinkOrder order = hrrnQueue.get(i);
+                        OrderMetrics metrics = metadataFor(order);
+                        double waiting = Math.max(0L, now - metrics.lastEnqueueTime);
+                        double ratio = (waiting + metrics.burstTime) / (double) metrics.burstTime;
+
+                        if (ratio > bestRatio) {
+                            bestRatio = ratio;
+                            bestIndex = i;
+                        } else if (ratio == bestRatio && metrics.orderId < metadataFor(hrrnQueue.get(bestIndex)).orderId) {
+                            bestIndex = i;
+                        }
+                    }
+
+                    return hrrnQueue.remove(bestIndex);
+                }
+            }
+
+            TimeUnit.MILLISECONDS.sleep(1);
         }
     }
 
- 
+    private void markServiceStart(DrinkOrder order) {
+        OrderMetrics metrics = metadataFor(order);
+        long now = simulationTime();
+        metrics.totalWaitingTime += now - metrics.lastEnqueueTime;
+
+        if (metrics.serviceStartTime < 0) {
+            metrics.serviceStartTime = now;
+        }
+    }
+
+    private void recordServedDrink(DrinkOrder order) {
+        if (schedAlg == 3) {
+            drinksServedPerPatron.merge(order.getOrderer(), 1, Integer::sum);
+        }
+    }
+
     @Override
     public void run() {
         try {
             startSignal.countDown();
             startSignal.await();
 
-            switch (schedAlg) {
-                case 0:
-                    runFCFS();
-                    break;
-                case 1:
-                    runSJF();
-                    break;
-                case 2:
-                    runPriority();
-                    break;
-                case 3:
-                    runMLFQ();
-                    break;
-                case 4:
-                    runLottery();
-                    break;
-                default:
-                    throw new IllegalStateException(
-                            "Unexpected scheduler " + schedAlg +
-                            ". Valid values are: 0=FCFS, 1=SJF, 2=Priority, 3=MLFQ, 4=LOTTERY."
-                    );
+            while (true) {
+                switch (schedAlg) {
+                    case 0:
+                        runNonPreemptive(fcfsQueue.take());
+                        break;
+                    case 1:
+                        runNonPreemptive(sjfQueue.take());
+                        break;
+                    case 2:
+                        runNonPreemptive(priorityQueue.take());
+                        break;
+                    case 3:
+                        runMLFQ(takeNextMLFQOrder());
+                        break;
+                    case 4:
+                        runNonPreemptive(takeNextHRRNOrder());
+                        break;
+                    default:
+                        throw new IllegalStateException("Unexpected scheduler " + schedAlg);
+                }
             }
-
         } catch (InterruptedException e) {
-            System.out.println("---Barman is packing up");
-            // Close CSV writer cleanly
-            try {
-                if (csvWriter != null) {
-                    csvWriter.flush();
-                    csvWriter.close();
-                }
-            } catch (IOException ex) {
-                System.err.println("Failed to close CSV writer: " + ex.getMessage());
-            }
+            System.out.println("---Barman is packing up ");
         } catch (IOException e) {
-            throw new RuntimeException("Failed to write output", e);
+            throw new RuntimeException("Failed to record results", e);
+        } finally {
+            closeResultsFile();
         }
     }
 
-    private void runFCFS() throws InterruptedException, IOException {
-        while (true) {
-            DrinkOrder currentOrder = fcfsQueue.take();
-            processOrder(currentOrder, "---Barman preparing drink for patron " + currentOrder);
-        }
+    private void runNonPreemptive(DrinkOrder order) throws InterruptedException, IOException {
+        markServiceStart(order);
+        System.out.println("---Barman preparing drink for patron " + order);
+        sleep(order.getExecutionTime());
+
+        OrderMetrics metrics = metadataFor(order);
+        metrics.completionTime = simulationTime();
+
+        System.out.println("---Barman has made drink for patron " + order);
+        order.orderDone();
+        recordServedDrink(order);
+        recordCompletedOrder(order);
+        sleep(switchTime);
     }
 
-    private void runSJF() throws InterruptedException, IOException {
-        while (true) {
-            DrinkOrder currentOrder = sjfQueue.take();
-            processOrder(currentOrder, "---Barman preparing drink for patron " + currentOrder);
+    private void runMLFQ(DrinkOrder order) throws InterruptedException, IOException {
+        OrderMetrics metrics = metadataFor(order);
+        markServiceStart(order);
+
+        int quantum = quantumFor(metrics.queueLevel);
+        int slice = Math.min(order.getExecutionTime(), quantum);
+        System.out.println("---Barman preparing drink for patron " + order + " from Q" + metrics.queueLevel);
+        sleep(slice);
+
+        int remaining = order.getExecutionTime() - slice;
+        order.setRemainingPreparationTime(remaining);
+
+        if (remaining <= 0) {
+            metrics.completionTime = simulationTime();
+            System.out.println("---Barman has made drink for patron " + order);
+            order.orderDone();
+            recordServedDrink(order);
+            recordCompletedOrder(order);
+        } else {
+            enqueueMLFQ(order, Math.min(metrics.queueLevel + 1, 2));
         }
-    }
-
-    private void runPriority() throws InterruptedException, IOException {
-        while (true) {
-            DrinkOrder currentOrder = priorityQueue.take();
-            processOrder(
-                    currentOrder,
-                    "---Barman preparing drink for patron " + currentOrder
-                            + " with priority " + currentOrder.getPriority()
-            );
-        }
-    }
-
-    private void runMLFQ() throws InterruptedException, IOException {
-        while (true) {
-            DrinkOrder currentOrder = takeNextMLFQOrder();
-            processOrder(
-                    currentOrder,
-                    "---Barman preparing drink for patron " + currentOrder
-                            + " from Q" + currentOrder.getQueueLevel()
-            );
-        }
-    }
-
-    private void runLottery() throws InterruptedException, IOException {
-        while (true) {
-            DrinkOrder winner = null;
-            synchronized (lotteryPool) {
-                if (!lotteryPool.isEmpty()) {
-                    long now = System.currentTimeMillis();
-                    int totalTickets = 0;
-                    List<Integer> tickets = new ArrayList<>();
-                    for (DrinkOrder order : lotteryPool) {
-                        int t = (int) ((now - order.getEnqueueTime()) / 100) + 1;
-                        tickets.add(t);
-                        totalTickets += t;
-                    }
-
-                    int drawn = lotteryRng.nextInt(totalTickets);
-                    int cumulative = 0;
-                    for (int i = 0; i < lotteryPool.size(); i++) {
-                        cumulative += tickets.get(i);
-                        if (drawn < cumulative) {
-                            winner = lotteryPool.remove(i);
-                            break;
-                        }
-                    }
-                }
-            }
-
-            if (winner != null) {
-                processOrder(
-                        winner,
-                        "---Barman preparing drink for patron " + winner + " (LOTTERY)"
-                );
-            } else {
-                TimeUnit.MILLISECONDS.sleep(1);
-            }
-        }
-    }
-
-    private void processOrder(DrinkOrder currentOrder, String startMessage)
-            throws InterruptedException, IOException {
-
-        currentOrder.setServiceStartTime(System.currentTimeMillis());
-        System.out.println(startMessage);
-        sleep(currentOrder.getExecutionTime());
-        currentOrder.setCompletionTime(System.currentTimeMillis());
-        System.out.println("---Barman has made drink for patron " + currentOrder);
-        currentOrder.orderDone();
-
-        recordServedDrink(currentOrder);
-        recordCompletedOrder(currentOrder);
 
         sleep(switchTime);
     }
-    
-//=NO CHANGE AREA ENDS=========================================================   
-      
-    
-    
+
+    private int quantumFor(int queueLevel) {
+        switch (queueLevel) {
+            case 0:
+                return MLFQ_Q1;
+            case 1:
+                return MLFQ_Q2;
+            default:
+                return MLFQ_Q3;
+        }
+    }
+
     private void recordCompletedOrder(DrinkOrder order) throws IOException {
+        OrderMetrics metrics = metadataFor(order);
+        long responseTime = metrics.serviceStartTime - metrics.arrivalTime;
+        long waitingTime = metrics.totalWaitingTime;
+        long turnaroundTime = metrics.completionTime - metrics.arrivalTime;
+        int queueLevel = (schedAlg == 3) ? metrics.queueLevel : -1;
 
-        // Compute metrics from timestamps already set on the order
-        long waitingTime    = order.getWaitingTime();
-        long responseTime   = order.getResponseTime();
-        long turnaroundTime = order.getTurnaroundTime();
-
-        // queueLevel is only meaningful for MLFQ; use -1 for others
-        int queueLevel = (schedAlg == 3) ? order.getQueueLevel() : -1;
-
-        // Validate — assert logical consistency before writing
-        if (waitingTime < 0 || turnaroundTime < 0) {
-            System.err.println("WARNING: negative metric detected for order: "
-                + order + " | waiting=" + waitingTime
-                + " turnaround=" + turnaroundTime);
+        if (waitingTime < 0 || responseTime < 0 || turnaroundTime < 0) {
+            throw new IllegalStateException("Negative metric generated for order " + metrics.orderId);
+        }
+        if (metrics.serviceStartTime < metrics.arrivalTime) {
+            throw new IllegalStateException("serviceStartTime < arrivalTime for order " + metrics.orderId);
+        }
+        if (metrics.completionTime < metrics.serviceStartTime) {
+            throw new IllegalStateException("completionTime < serviceStartTime for order " + metrics.orderId);
         }
         if (turnaroundTime < waitingTime) {
-            System.err.println("WARNING: turnaround < waiting for order: "
-                + order);
+            throw new IllegalStateException("turnaroundTime < waitingTime for order " + metrics.orderId);
         }
 
-        // Format one CSV row
-        String row = String.format(Locale.US,
-            "%d,%s,%d,%d,%d,%d,%d,%d,%d,%d%n",
-            order.getOrderer(),
-            order.getDrinkName(),
-            order.getExecutionTime(),
-            order.getArrivalTime(),
-            order.getServiceStartTime(),
-            order.getCompletionTime(),
-            waitingTime,
+        String row = String.format(
+            Locale.US,
+            "%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d%n",
+            metrics.patronId,
+            metrics.orderId,
+            metrics.arrivalTime,
+            metrics.burstTime,
+            metrics.priority,
+            metrics.serviceStartTime,
+            metrics.completionTime,
             responseTime,
+            waitingTime,
             turnaroundTime,
             queueLevel
         );
 
-        // Write atomically — Barman is a single thread but guard anyway
         synchronized (CSV_LOCK) {
             csvWriter.write(row);
             csvWriter.flush();
         }
     }
 
+    private void closeResultsFile() {
+        if (csvWriter == null) {
+            return;
+        }
+
+        try {
+            csvWriter.flush();
+            csvWriter.close();
+        } catch (IOException e) {
+            System.err.println("Failed to close results file: " + e.getMessage());
+        }
+    }
+
+    private long simulationTime() {
+        return System.currentTimeMillis() - SchedulingSimulation.simStartTime;
+    }
+
+    private static final class OrderMetrics {
+        private final long orderId;
+        private final int patronId;
+        private final int burstTime;
+        private final int priority;
+        private final long arrivalTime;
+        private long lastEnqueueTime;
+        private long serviceStartTime = -1L;
+        private long completionTime = -1L;
+        private long totalWaitingTime = 0L;
+        private int queueLevel = -1;
+
+        private OrderMetrics(long orderId, int patronId, int burstTime, int priority, long arrivalTime) {
+            this.orderId = orderId;
+            this.patronId = patronId;
+            this.burstTime = burstTime;
+            this.priority = priority;
+            this.arrivalTime = arrivalTime;
+            this.lastEnqueueTime = arrivalTime;
+        }
+    }
 }

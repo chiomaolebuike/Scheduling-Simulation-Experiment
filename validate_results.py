@@ -3,16 +3,17 @@ import sys
 from pathlib import Path
 
 EXPECTED_HEADER = [
-    "patronID",
-    "drinkName",
-    "executionTime",
-    "arrivalTime",
-    "serviceStartTime",
-    "completionTime",
-    "waitingTime",
-    "responseTime",
-    "turnaroundTime",
-    "queueLevel",
+    "patron_id",
+    "order_id",
+    "arrival_time",
+    "burst_time",
+    "priority",
+    "service_start_time",
+    "completion_time",
+    "response_time",
+    "waiting_time",
+    "turnaround_time",
+    "queue_level",
 ]
 
 
@@ -42,6 +43,7 @@ def validate_csv(path: Path) -> int:
         is_fcfs = algorithm == "FCFS"
         is_sjf = algorithm == "SJF"
         is_priority = algorithm == "PRIORITY"
+        is_hrrn = algorithm == "HRRN"
 
         for row in reader:
             line_number += 1
@@ -52,18 +54,24 @@ def validate_csv(path: Path) -> int:
 
             try:
                 patron_id = int(row[0])
-                execution_time = int(row[2])
-                arrival_time = int(row[3])
-                service_start = int(row[4])
-                completion_time = int(row[5])
-                waiting_time = int(row[6])
+                order_id = int(row[1])
+                arrival_time = int(row[2])
+                burst_time = int(row[3])
+                priority = int(row[4])
+                service_start = int(row[5])
+                completion_time = int(row[6])
                 response_time = int(row[7])
-                turnaround_time = int(row[8])
-                queue_level = int(row[9])
+                waiting_time = int(row[8])
+                turnaround_time = int(row[9])
+                queue_level = int(row[10])
             except ValueError as exc:
                 print(f"ERROR: line {line_number} has invalid numeric value: {exc}")
                 errors += 1
                 continue
+
+            if patron_id < 0 or order_id < 0 or burst_time <= 0 or priority <= 0:
+                print(f"ERROR: line {line_number} has invalid identifier or workload values")
+                errors += 1
 
             if waiting_time < 0 or response_time < 0 or turnaround_time < 0:
                 print(f"ERROR: line {line_number} has negative timing values: waiting={waiting_time}, response={response_time}, turnaround={turnaround_time}")
@@ -81,7 +89,7 @@ def validate_csv(path: Path) -> int:
                 if queue_level not in {0, 1, 2}:
                     print(f"ERROR: line {line_number} has invalid queueLevel for MLFQ: {queue_level}")
                     errors += 1
-            elif is_fcfs or is_sjf or is_priority:
+            elif is_fcfs or is_sjf or is_priority or is_hrrn:
                 if queue_level != -1:
                     print(f"ERROR: line {line_number} has queueLevel {queue_level}, expected -1 for {algorithm}")
                     errors += 1
@@ -96,7 +104,7 @@ def validate_csv(path: Path) -> int:
 
 if __name__ == "__main__":
     if len(sys.argv) != 2:
-        print("Usage: python validate_results.py results/<ALGORITHM>_results.csv")
+        print("Usage: python validate_results.py results/<algorithm>/<ALGORITHM>_n<patrons>_s<seed>.csv")
         sys.exit(1)
 
     file_path = Path(sys.argv[1])

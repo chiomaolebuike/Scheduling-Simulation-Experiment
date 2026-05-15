@@ -60,17 +60,6 @@ public class DrinkOrder {
     private int prepTime;
     private final int orderer;
 
-    // scheduling metadata
-    private long enqueueTime;
-    private int queueLevel = 0;
-    private int priority = 0;
-    private long sequenceNumber = 0L;
-
-    // timing metadata
-    private long arrivalTime;
-    private long serviceStartTime;
-    private long completionTime;
-
     public static Random random = new Random();
     private final AtomicBoolean orderComplete;
 
@@ -92,74 +81,6 @@ public class DrinkOrder {
 
     public String getDrinkName() {
         return drink.getName();
-    }
-
-    public long getEnqueueTime() {
-        return enqueueTime;
-    }
-
-    public void setEnqueueTime(long enqueueTime) {
-        this.enqueueTime = enqueueTime;
-    }
-
-    public int getQueueLevel() {
-        return queueLevel;
-    }
-
-    public void setQueueLevel(int queueLevel) {
-        this.queueLevel = queueLevel;
-    }
-
-    public int getPriority() {
-        return priority;
-    }
-
-    public void setPriority(int priority) {
-        this.priority = priority;
-    }
-
-    public long getSequenceNumber() {
-        return sequenceNumber;
-    }
-
-    public void setSequenceNumber(long sequenceNumber) {
-        this.sequenceNumber = sequenceNumber;
-    }
-
-    public long getArrivalTime() {
-        return arrivalTime;
-    }
-
-    public void setArrivalTime(long arrivalTime) {
-        this.arrivalTime = arrivalTime;
-    }
-
-    public long getServiceStartTime() {
-        return serviceStartTime;
-    }
-
-    public void setServiceStartTime(long serviceStartTime) {
-        this.serviceStartTime = serviceStartTime;
-    }
-
-    public long getCompletionTime() {
-        return completionTime;
-    }
-
-    public void setCompletionTime(long completionTime) {
-        this.completionTime = completionTime;
-    }
-
-    public long getWaitingTime() {
-        return serviceStartTime - arrivalTime;
-    }
-
-    public long getResponseTime() {
-        return serviceStartTime - arrivalTime;
-    }
-
-    public long getTurnaroundTime() {
-        return completionTime - arrivalTime;
     }
 
     public int getExecutionTime() {

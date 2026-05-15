@@ -1,7 +1,7 @@
 JAVAC = javac
 JAVA = java
 SRC = src/barScheduling/*.java
-BIN = bin
+BIN = build_output
 MAIN = barScheduling.SchedulingSimulation
 
 $(BIN):
@@ -13,7 +13,9 @@ compile: $(BIN)
 run: compile
 	$(JAVA) -cp $(BIN) $(MAIN) $(ARGS)
 
+experiments:
+	cmd /c run_experiments.bat
+
 clean:
 	rm -rf $(BIN)
 	rm -rf results
-
