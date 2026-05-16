@@ -7,7 +7,7 @@
  1 = SJF
  2 = Priority
  3 = MLFQ with aging
- 4 = HRRN bonus scheduler
+ 4 = Lottery bonus scheduler
  */
 
 package barScheduling;
@@ -19,6 +19,7 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Locale;
+import java.util.Random;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.LinkedBlockingQueue;
@@ -42,7 +43,8 @@ public class Barman extends Thread {
     private LinkedBlockingQueue<DrinkOrder> q0;
     private LinkedBlockingQueue<DrinkOrder> q1;
     private LinkedBlockingQueue<DrinkOrder> q2;
-    private final List<DrinkOrder> hrrnQueue;
+    private final List<DrinkOrder> lotteryPool;
+    private final Random lotteryRng;
 
     private final ConcurrentHashMap<Integer, Integer> drinksServedPerPatron;
     private final ConcurrentHashMap<DrinkOrder, OrderMetrics> orderMetrics;
@@ -55,7 +57,10 @@ public class Barman extends Thread {
         this.switchTime = sTime;
         this.drinksServedPerPatron = new ConcurrentHashMap<Integer, Integer>();
         this.orderMetrics = new ConcurrentHashMap<DrinkOrder, OrderMetrics>();
-        this.hrrnQueue = (sAlg == 4) ? new ArrayList<DrinkOrder>() : null;
+        this.lotteryPool = (sAlg == 4) ? new ArrayList<DrinkOrder>() : null;
+        this.lotteryRng = (SchedulingSimulation.seed > 0)
+            ? new Random(SchedulingSimulation.seed)
+            : new Random();
 
         switch (schedAlg) {
             case 0:
@@ -85,7 +90,7 @@ public class Barman extends Thread {
             default:
                 throw new IllegalArgumentException(
                     "Invalid scheduler " + sAlg +
-                    ". Valid values are: 0=FCFS, 1=SJF, 2=Priority, 3=MLFQ, 4=HRRN."
+                    ". Valid values are: 0=FCFS, 1=SJF, 2=Priority, 3=MLFQ, 4=LOTTERY."
                 );
         }
 
@@ -122,30 +127,29 @@ public class Barman extends Thread {
                 q0.put(order);
                 break;
             case 4:
-                synchronized (hrrnQueue) {
-                    hrrnQueue.add(order);
+                synchronized (lotteryPool) {
+                    lotteryPool.add(order);
                 }
                 break;
             default:
                 throw new IllegalArgumentException(
                     "Invalid scheduler " + schedAlg +
-                    ". Valid values are: 0=FCFS, 1=SJF, 2=Priority, 3=MLFQ, 4=HRRN."
+                    ". Valid values are: 0=FCFS, 1=SJF, 2=Priority, 3=MLFQ, 4=LOTTERY."
                 );
         }
     }
 
     private void openResultsFile() throws IOException {
         String schedulerName = schedulerName(schedAlg);
-        String directoryName = schedulerName.toLowerCase(Locale.ROOT);
-        File directory = new File("results", directoryName);
+        File directory = new File("results");
         directory.mkdirs();
 
-        String filename = schedulerName + "_n" + SchedulingSimulation.noPatrons + "_s" + SchedulingSimulation.seed + ".csv";
+        String filename = schedulerName + "_results.csv";
         File file = new File(directory, filename);
         csvWriter = new FileWriter(file, false);
         csvWriter.write(
-            "patron_id,order_id,arrival_time,burst_time,priority," +
-            "service_start_time,completion_time,response_time,waiting_time,turnaround_time,queue_level\n"
+            "patronID,orderID,arrivalTime,burstTime,priority," +
+            "serviceStartTime,completionTime,responseTime,waitingTime,turnaroundTime,queueLevel\n"
         );
         csvWriter.flush();
     }
@@ -161,7 +165,7 @@ public class Barman extends Thread {
             case 3:
                 return "MLFQ";
             case 4:
-                return "HRRN";
+                return "LOTTERY";
             default:
                 throw new IllegalArgumentException("Unknown scheduler " + schedAlg);
         }
@@ -270,29 +274,30 @@ public class Barman extends Thread {
         }
     }
 
-    private DrinkOrder takeNextHRRNOrder() throws InterruptedException {
+    private DrinkOrder takeNextLotteryOrder() throws InterruptedException {
         while (true) {
-            synchronized (hrrnQueue) {
-                if (!hrrnQueue.isEmpty()) {
+            synchronized (lotteryPool) {
+                if (!lotteryPool.isEmpty()) {
                     long now = simulationTime();
-                    int bestIndex = 0;
-                    double bestRatio = -1.0;
+                    int totalTickets = 0;
+                    List<Integer> tickets = new ArrayList<Integer>(lotteryPool.size());
 
-                    for (int i = 0; i < hrrnQueue.size(); i++) {
-                        DrinkOrder order = hrrnQueue.get(i);
+                    for (DrinkOrder order : lotteryPool) {
                         OrderMetrics metrics = metadataFor(order);
-                        double waiting = Math.max(0L, now - metrics.lastEnqueueTime);
-                        double ratio = (waiting + metrics.burstTime) / (double) metrics.burstTime;
-
-                        if (ratio > bestRatio) {
-                            bestRatio = ratio;
-                            bestIndex = i;
-                        } else if (ratio == bestRatio && metrics.orderId < metadataFor(hrrnQueue.get(bestIndex)).orderId) {
-                            bestIndex = i;
-                        }
+                        int waitTickets = (int) Math.max(1L, ((now - metrics.lastEnqueueTime) / 100L) + 1L);
+                        tickets.add(waitTickets);
+                        totalTickets += waitTickets;
                     }
 
-                    return hrrnQueue.remove(bestIndex);
+                    int drawn = lotteryRng.nextInt(totalTickets);
+                    int cumulative = 0;
+
+                    for (int i = 0; i < lotteryPool.size(); i++) {
+                        cumulative += tickets.get(i);
+                        if (drawn < cumulative) {
+                            return lotteryPool.remove(i);
+                        }
+                    }
                 }
             }
 
@@ -337,7 +342,7 @@ public class Barman extends Thread {
                         runMLFQ(takeNextMLFQOrder());
                         break;
                     case 4:
-                        runNonPreemptive(takeNextHRRNOrder());
+                        runLottery();
                         break;
                     default:
                         throw new IllegalStateException("Unexpected scheduler " + schedAlg);
@@ -392,6 +397,21 @@ public class Barman extends Thread {
         sleep(switchTime);
     }
 
+    private void runLottery() throws InterruptedException, IOException {
+        DrinkOrder order = takeNextLotteryOrder();
+        markServiceStart(order);
+        System.out.println("---Barman preparing drink for patron " + order + " with LOTTERY");
+        sleep(order.getExecutionTime());
+
+        OrderMetrics metrics = metadataFor(order);
+        metrics.completionTime = simulationTime();
+
+        System.out.println("---Barman has made drink for patron " + order);
+        order.orderDone();
+        recordCompletedOrder(order);
+        sleep(switchTime);
+    }
+
     private int quantumFor(int queueLevel) {
         switch (queueLevel) {
             case 0:
@@ -408,7 +428,10 @@ public class Barman extends Thread {
         long responseTime = metrics.serviceStartTime - metrics.arrivalTime;
         long waitingTime = metrics.totalWaitingTime;
         long turnaroundTime = metrics.completionTime - metrics.arrivalTime;
-        int queueLevel = (schedAlg == 3) ? metrics.queueLevel : -1;
+        int queueLevel;
+        if      (schedAlg == 3) queueLevel = metrics.queueLevel;
+        else if (schedAlg == 4) queueLevel = -2;
+        else                    queueLevel = -1;
 
         if (waitingTime < 0 || responseTime < 0 || turnaroundTime < 0) {
             throw new IllegalStateException("Negative metric generated for order " + metrics.orderId);
