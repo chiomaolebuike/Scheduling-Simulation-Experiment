@@ -17,9 +17,17 @@ EXPECTED_HEADER = [
 ]
 
 
-def validate_csv(path: Path) -> int:
+def validate_csv(path: Path, report_path: Path | None = None) -> int:
+    report_lines: list[str] = []
+
+    def report(message: str) -> None:
+        report_lines.append(message)
+        print(message)
+
     if not path.exists():
-        print(f"ERROR: file not found: {path}")
+        report(f"ERROR: file not found: {path}")
+        if report_path:
+            report_path.write_text("\n".join(report_lines) + "\n", encoding="utf-8")
         return 1
 
     with path.open(newline="", encoding="utf-8") as f:
@@ -27,13 +35,17 @@ def validate_csv(path: Path) -> int:
         try:
             header = next(reader)
         except StopIteration:
-            print(f"ERROR: empty file: {path}")
+            report(f"ERROR: empty file: {path}")
+            if report_path:
+                report_path.write_text("\n".join(report_lines) + "\n", encoding="utf-8")
             return 1
 
         if header != EXPECTED_HEADER:
-            print("ERROR: CSV header does not match expected format")
-            print(" expected:", EXPECTED_HEADER)
-            print(" found:   ", header)
+            report("ERROR: CSV header does not match expected format")
+            report(" expected: " + ", ".join(EXPECTED_HEADER))
+            report(" found:   " + ", ".join(header))
+            if report_path:
+                report_path.write_text("\n".join(report_lines) + "\n", encoding="utf-8")
             return 1
 
         errors = 0
@@ -48,7 +60,7 @@ def validate_csv(path: Path) -> int:
         for row in reader:
             line_number += 1
             if len(row) != len(EXPECTED_HEADER):
-                print(f"ERROR: line {line_number} has {len(row)} fields, expected {len(EXPECTED_HEADER)}")
+                report(f"ERROR: line {line_number} has {len(row)} fields, expected {len(EXPECTED_HEADER)}")
                 errors += 1
                 continue
 
@@ -65,47 +77,52 @@ def validate_csv(path: Path) -> int:
                 turnaround_time = int(row[9])
                 queue_level = int(row[10])
             except ValueError as exc:
-                print(f"ERROR: line {line_number} has invalid numeric value: {exc}")
+                report(f"ERROR: line {line_number} has invalid numeric value: {exc}")
                 errors += 1
                 continue
 
             if patron_id < 0 or order_id < 0 or burst_time <= 0 or priority <= 0:
-                print(f"ERROR: line {line_number} has invalid identifier or workload values")
+                report(f"ERROR: line {line_number} has invalid identifier or workload values")
                 errors += 1
 
             if waiting_time < 0 or response_time < 0 or turnaround_time < 0:
-                print(f"ERROR: line {line_number} has negative timing values: waiting={waiting_time}, response={response_time}, turnaround={turnaround_time}")
+                report(f"ERROR: line {line_number} has negative timing values: waiting={waiting_time}, response={response_time}, turnaround={turnaround_time}")
                 errors += 1
 
             if not (arrival_time <= service_start < completion_time):
-                print(f"ERROR: line {line_number} has inconsistent timestamps: arrival={arrival_time}, serviceStart={service_start}, completion={completion_time}")
+                report(f"ERROR: line {line_number} has inconsistent timestamps: arrival={arrival_time}, serviceStart={service_start}, completion={completion_time}")
                 errors += 1
 
             if turnaround_time < waiting_time:
-                print(f"ERROR: line {line_number} has turnaroundTime < waitingTime: {turnaround_time} < {waiting_time}")
+                report(f"ERROR: line {line_number} has turnaroundTime < waitingTime: {turnaround_time} < {waiting_time}")
                 errors += 1
 
             if is_mlfq:
                 if queue_level not in {0, 1, 2}:
-                    print(f"ERROR: line {line_number} has invalid queueLevel for MLFQ: {queue_level}")
+                    report(f"ERROR: line {line_number} has invalid queueLevel for MLFQ: {queue_level}")
                     errors += 1
             elif is_fcfs or is_sjf or is_priority or is_hrrn:
                 if queue_level != -1:
-                    print(f"ERROR: line {line_number} has queueLevel {queue_level}, expected -1 for {algorithm}")
+                    report(f"ERROR: line {line_number} has queueLevel {queue_level}, expected -1 for {algorithm}")
                     errors += 1
 
         if errors == 0:
-            print(f"PASS: {path} is valid ({line_number - 1} data rows)")
+            report(f"PASS: {path} is valid ({line_number - 1} data rows)")
+            if report_path:
+                report_path.write_text("\n".join(report_lines) + "\n", encoding="utf-8")
             return 0
 
-        print(f"FAIL: {errors} validation issue(s) found in {path}")
+        report(f"FAIL: {errors} validation issue(s) found in {path}")
+        if report_path:
+            report_path.write_text("\n".join(report_lines) + "\n", encoding="utf-8")
         return 1
 
 
 if __name__ == "__main__":
-    if len(sys.argv) != 2:
-        print("Usage: python validate_results.py results/<algorithm>/<ALGORITHM>_n<patrons>_s<seed>.csv")
+    if len(sys.argv) not in {2, 3}:
+        print("Usage: python validate_results.py results/<algorithm>/<ALGORITHM>_n<patrons>_s<seed>.csv [report.txt]")
         sys.exit(1)
 
     file_path = Path(sys.argv[1])
-    raise SystemExit(validate_csv(file_path))
+    report_path = Path(sys.argv[2]) if len(sys.argv) == 3 else file_path.with_suffix(".txt")
+    raise SystemExit(validate_csv(file_path, report_path))

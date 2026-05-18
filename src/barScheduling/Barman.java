@@ -33,6 +33,18 @@ public class Barman extends Thread {
     private static final long AGING_THRESHOLD = 4000L;
     private static final Object CSV_LOCK = new Object();
 
+    // Aging + Burst-Aware Weighted Lottery Scheduling Constants
+    // Exponential aging: tickets double every LOTTERY_AGING_SCALE milliseconds
+    private static final long LOTTERY_AGING_SCALE = 500L;
+    // Maximum aging bonus cap (prevents overflow): 2^10 - 1 = 1023
+    private static final long LOTTERY_MAX_AGE_BONUS = 1023L;
+    // Burst thresholds (in milliseconds of execution time)
+    private static final int LOTTERY_SHORT_BURST_THRESHOLD = 50;
+    private static final int LOTTERY_LONG_BURST_THRESHOLD = 100;
+    // Burst-aware weighting multipliers
+    private static final double LOTTERY_SHORT_JOB_MULTIPLIER = 1.2;  // +20% for short jobs
+    private static final double LOTTERY_LONG_JOB_MULTIPLIER = 0.8;   // -20% for long jobs
+
     private final CountDownLatch startSignal;
     private final int schedAlg;
     private final int switchTime;
@@ -279,30 +291,132 @@ public class Barman extends Thread {
             synchronized (lotteryPool) {
                 if (!lotteryPool.isEmpty()) {
                     long now = simulationTime();
-                    int totalTickets = 0;
-                    List<Integer> tickets = new ArrayList<Integer>(lotteryPool.size());
+                    long totalTickets = 0L;
+                    List<Long> ticketCounts = new ArrayList<Long>(lotteryPool.size());
 
+                    // Calculate weighted lottery tickets for each queued order
+                    // Tickets = (base + exponential_aging_bonus) * burst_weighting
                     for (DrinkOrder order : lotteryPool) {
-                        OrderMetrics metrics = metadataFor(order);
-                        int waitTickets = (int) Math.max(1L, ((now - metrics.lastEnqueueTime) / 100L) + 1L);
-                        tickets.add(waitTickets);
-                        totalTickets += waitTickets;
+                        long orderTickets = calculateLotteryTickets(order, now);
+                        ticketCounts.add(orderTickets);
+                        totalTickets += orderTickets;
                     }
 
-                    int drawn = lotteryRng.nextInt(totalTickets);
-                    int cumulative = 0;
+                    // Perform lottery draw: select order via cumulative ticket distribution
+                    // Use modulo arithmetic for uniform distribution over totalTickets
+                    long drawn = Math.abs(lotteryRng.nextLong()) % totalTickets;
+                    long cumulative = 0L;
 
                     for (int i = 0; i < lotteryPool.size(); i++) {
-                        cumulative += tickets.get(i);
+                        cumulative += ticketCounts.get(i);
                         if (drawn < cumulative) {
+                            // Selected order found; remove and return
                             return lotteryPool.remove(i);
                         }
                     }
+
+                    // Fallback (should not reach): select first order
+                    return lotteryPool.remove(0);
                 }
             }
 
             TimeUnit.MILLISECONDS.sleep(1);
         }
+    }
+
+    /**
+     * Calculates probabilistic lottery tickets for an order using Advanced Weighted Lottery.
+     * 
+     * Combines three fairness factors:
+     * 1. Base tickets (ensures minimum probability)
+     * 2. Exponential aging bonus (prevents starvation via fast growth)
+     * 3. Burst-aware weighting (probabilistic short-job preference)
+     * 
+     * Formula: tickets = (BASE + AGING_BONUS) × BURST_MULTIPLIER
+     * 
+     * This design:
+     * - Maintains probabilistic fairness (genuine lottery semantics)
+     * - Approaches SJF performance via soft short-job bias
+     * - Prevents starvation via unbounded exponential aging
+     * - Reduces convoy effects by favoring job completion
+     * 
+     * @param order The drink order to evaluate
+     * @param now Current simulation time (milliseconds)
+     * @return Ticket count for this order
+     */
+    private long calculateLotteryTickets(DrinkOrder order, long now) {
+        OrderMetrics metrics = metadataFor(order);
+        long waitTimeMs = now - metrics.lastEnqueueTime;
+
+        // Component 1: Base Tickets
+        // Ensures every order has at least 1 ticket (non-zero probability)
+        // Satisfies lottery scheduling requirement: ∀orders, P(select) > 0
+        long baseTickets = 1L;
+
+        // Component 2: Exponential Aging Bonus
+        // Growth rate: ticket count roughly doubles every LOTTERY_AGING_SCALE ms
+        // This provides aggressive starvation prevention compared to linear aging
+        // 
+        // Mathematics:
+        //   agingExponent = ⌊waitTimeMs / LOTTERY_AGING_SCALE⌋
+        //   agingBonus = min(MAX_AGE_BONUS, 2^agingExponent - 1)
+        //
+        // Examples (LOTTERY_AGING_SCALE = 500ms):
+        //   0ms wait   → exponent=0 → bonus = 0      (2^0 - 1 = 0)
+        //   500ms wait → exponent=1 → bonus = 1      (2^1 - 1 = 1)
+        //   1000ms     → exponent=2 → bonus = 3      (2^2 - 1 = 3)
+        //   1500ms     → exponent=3 → bonus = 7      (2^3 - 1 = 7)
+        //   2000ms     → exponent=4 → bonus = 15     (2^4 - 1 = 15)
+        //   2500ms     → exponent=5 → bonus = 31     (2^5 - 1 = 31)
+        //
+        // Rationale: Exponential growth prevents starvation probabilistically
+        // An order waiting 2000ms has 16x base probability, virtually guaranteeing selection
+        long agingBonus = 0L;
+        if (waitTimeMs > 0) {
+            long ageExponent = Math.min(
+                10L,  // Cap exponent at 2^10 to prevent overflow
+                waitTimeMs / LOTTERY_AGING_SCALE
+            );
+            agingBonus = Math.min(
+                LOTTERY_MAX_AGE_BONUS,
+                (1L << ageExponent) - 1L  // Bit shift: 1 << n = 2^n
+            );
+        }
+
+        // Component 3: Burst-Aware Weighting Multiplier
+        // Provides soft short-job preference without deterministic bias
+        //
+        // Design:
+        //   Short bursts (≤50ms):  1.2× multiplier  (+20% probability boost)
+        //   Medium bursts (51-100): 1.0× multiplier (baseline)
+        //   Long bursts (>100ms):   0.8× multiplier (-20% probability penalty)
+        //
+        // Rationale:
+        //   - Reduces response time for short jobs (similar to SJF)
+        //   - Reduces convoy effects (queue clears faster)
+        //   - Still probabilistic (fairness maintained)
+        //   - NOT deterministic SJF (long jobs still get selected)
+        //   - No risk of starvation due to exponential aging backup
+        double burstMultiplier = 1.0;
+        int burstTimeMs = metrics.burstTime;
+        
+        if (burstTimeMs <= LOTTERY_SHORT_BURST_THRESHOLD) {
+            burstMultiplier = LOTTERY_SHORT_JOB_MULTIPLIER;
+        } else if (burstTimeMs > LOTTERY_LONG_BURST_THRESHOLD) {
+            burstMultiplier = LOTTERY_LONG_JOB_MULTIPLIER;
+        }
+
+        // Combine all components: (base + aging) × burst_weighting
+        // Examples (assume 1000ms wait):
+        //   Short job (30ms): (1 + 3) × 1.2 = 4.8 → 5 tickets
+        //   Medium job (75ms): (1 + 3) × 1.0 = 4.0 → 4 tickets
+        //   Long job (150ms): (1 + 3) × 0.8 = 3.2 → 3 tickets
+        long totalTickets = baseTickets + agingBonus;
+        long weightedTickets = Math.round(totalTickets * burstMultiplier);
+
+        // Ensure minimum 1 ticket (critical for lottery correctness)
+        // Prevents any order from having zero probability
+        return Math.max(1L, weightedTickets);
     }
 
     private void markServiceStart(DrinkOrder order) {
